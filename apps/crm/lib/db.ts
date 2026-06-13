@@ -10,12 +10,8 @@ export function getPool(): Pool {
       throw new Error('DATABASE_URL environment variable is not set');
     }
 
-    // Vercel + Supabase requires SSL with rejectUnauthorized: false
-    const sslConfig = connectionString.includes('supabase.co') ||
-                      connectionString.includes('railway.app') ||
-                      process.env.DATABASE_SSL === 'true'
-      ? { rejectUnauthorized: false }
-      : false;
+    // Vercel + Supabase requires SSL
+    const sslConfig = { rejectUnauthorized: false };
 
     pool = new Pool({
       connectionString,
