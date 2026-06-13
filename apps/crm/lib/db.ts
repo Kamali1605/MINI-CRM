@@ -1,20 +1,33 @@
 import { Pool } from 'pg';
 
-// Singleton pool — reused across API routes in Next.js
 let pool: Pool | null = null;
 
 export function getPool(): Pool {
   if (!pool) {
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+      throw new Error('DATABASE_URL environment variable is not set');
+    }
+
+    // Vercel + Supabase requires SSL with rejectUnauthorized: false
+    const sslConfig = connectionString.includes('supabase.co') ||
+                      connectionString.includes('railway.app') ||
+                      process.env.DATABASE_SSL === 'true'
+      ? { rejectUnauthorized: false }
+      : false;
+
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
+      connectionString,
+      ssl: sslConfig,
       max: 10,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
+      connectionTimeoutMillis: 5000,
     });
 
     pool.on('error', (err) => {
       console.error('Unexpected pg pool error', err);
+      pool = null; // Reset pool on error so it reconnects
     });
   }
   return pool;
