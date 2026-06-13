@@ -1,41 +1,61 @@
-import { Pool } from 'pg';
+/**
+ * Database layer using Supabase JS client.
+ * Works on Vercel serverless without connection issues.
+ */
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-let pool: Pool | null = null;
+let _client: SupabaseClient | null = null;
 
-export function getPool(): Pool {
-  if (!pool) {
-    const connectionString = process.env.DATABASE_URL;
+function getClient(): SupabaseClient {
+  if (!_client) {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const key =
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-    if (!connectionString) {
-      throw new Error('DATABASE_URL environment variable is not set');
+    if (!url || !key) {
+      throw new Error(`Supabase config missing. URL: ${!!url}, KEY: ${!!key}`);
     }
 
-    // Vercel + Supabase requires SSL
-    const sslConfig = { rejectUnauthorized: false };
-
-    pool = new Pool({
-      connectionString,
-      ssl: sslConfig,
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    });
-
-    pool.on('error', (err) => {
-      console.error('Unexpected pg pool error', err);
-      pool = null; // Reset pool on error so it reconnects
+    _client = createClient(url, key, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      db: { schema: 'public' },
     });
   }
-  return pool;
+  return _client;
 }
 
+/**
+ * Execute a raw SQL query via Supabase's REST API.
+ * Uses pg_query RPC for arbitrary SQL, falling back to pg for local dev.
+ */
 export async function query<T = Record<string, unknown>>(
   text: string,
   params?: unknown[]
 ): Promise<T[]> {
-  const db = getPool();
-  const result = await db.query(text, params);
-  return result.rows as T[];
+  // Replace $1, $2... with actual values for Supabase RPC
+  let sql = text;
+  if (params && params.length > 0) {
+    params.forEach((p, i) => {
+      const placeholder = `\\$${i + 1}`;
+      const value = typeof p === 'string'
+        ? `'${p.replace(/'/g, "''")}'`
+        : p === null ? 'NULL'
+        : String(p);
+      sql = sql.replace(new RegExp(placeholder, 'g'), value);
+    });
+  }
+
+  const client = getClient();
+  const { data, error } = await client.rpc('exec_raw_sql', { sql });
+
+  if (error) {
+    console.error('[db] RPC error, trying pg fallback:', error.message);
+    return queryPg<T>(text, params);
+  }
+
+  return (data as T[]) ?? [];
 }
 
 export async function queryOne<T = Record<string, unknown>>(
@@ -44,4 +64,32 @@ export async function queryOne<T = Record<string, unknown>>(
 ): Promise<T | null> {
   const rows = await query<T>(text, params);
   return rows[0] ?? null;
+}
+
+// ── pg fallback for local dev ────────────────────────────────────────────────
+import { Pool } from 'pg';
+let _pool: Pool | null = null;
+
+function getPool(): Pool {
+  if (!_pool) {
+    const cs = process.env.DATABASE_URL;
+    if (!cs) throw new Error('DATABASE_URL not set');
+    _pool = new Pool({
+      connectionString: cs,
+      ssl: { rejectUnauthorized: false },
+      max: 3,
+      connectionTimeoutMillis: 10000,
+    });
+    _pool.on('error', () => { _pool = null; });
+  }
+  return _pool;
+}
+
+async function queryPg<T = Record<string, unknown>>(
+  text: string,
+  params?: unknown[]
+): Promise<T[]> {
+  const db = getPool();
+  const result = await db.query(text, params);
+  return result.rows as T[];
 }
